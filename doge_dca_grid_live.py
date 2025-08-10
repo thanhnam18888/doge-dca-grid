@@ -1,19 +1,21 @@
 
 """
-DOGEUSDT Flip-on-TP — Win-Only Close (Aggressive Preset, Throttled Logs, Clean init)
-------------------------------------------------------------------------------------
+DOGEUSDT Flip-on-TP — Win-Only Close
+Aggressive preset sized for ~600 USDT equity
+------------------------------------------------
+- LONG cap ~500 USDT, base 40; SHORT cap 120, base 12.
 - Always-in-market: LONG <-> SHORT; flip on TP.
 - "Win-only": close only when net profit >= min_profit_usd (after taker fees). No loss-closes.
 - TP default: Limit PostOnly (maker) reduceOnly. Detect fills by syncing positions.
 - RSI gating: RSI_D > 70 ⇒ prefer SHORT (pause LONG); else prefer LONG (pause SHORT).
 - Cooldown after TP: 10 minutes.
-- DCA against adverse moves with limits; widen step when deep.
+- DCA against adverse moves with limits; widen step when deep (>= level 3 add +3%).
 - Funding guard for SHORT: pause SHORT open/DCA if funding < -0.06%/8h.
-- Extra logging: liqPrice & adlRank (if Bybit returns).
-- Throttled logs: Heartbeat every 30s, RiskView every 120s (configurable).
-- Clean init: switch_position_mode & set_leverage don't spam retries; "not modified" downgraded to INFO.
+- Throttled logs: Heartbeat every 30s, RiskView every 120s (configurable via ENV).
 
 ENV: BYBIT_API_KEY/BYBIT_API_SECRET (or API_KEY/API_SECRET)
+LOG_LEVEL (optional): INFO|WARNING (default INFO)
+LOG_HEARTBEAT_SEC, LOG_RISKVIEW_SEC (optional)
 Needs: pip install pybit
 """
 
@@ -27,25 +29,25 @@ _level = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, _level, logging.INFO),
                     format="%(asctime)s %(levelname)s: %(message)s")
 
-# ---------------------- config (Aggressive) ----------------------
+# ---------------------- config (Aggressive for ~600 USDT) ----------------------
 
 @dataclass
 class LongCfg:
-    base_usdt: float = 24.0
+    base_usdt: float = 40.0
     step_pct: float = 0.055          # 5.5%
     volume_scale: float = 1.18
     max_dca: int = 7
     tp_pct_floor: float = 0.01       # 1% min raw TP
-    max_position_usdt: float = 175.0
+    max_position_usdt: float = 500.0 # cap ~500
 
 @dataclass
 class ShortCfg:
-    base_usdt: float = 10.0
+    base_usdt: float = 12.0
     step_pct: float = 0.075          # 7.5%
     volume_scale: float = 1.15
     max_dca: int = 3
     tp_pct_floor: float = 0.01       # 1%
-    max_position_usdt: float = 85.0
+    max_position_usdt: float = 120.0 # cap ~120
 
 @dataclass
 class RiskCfg:
@@ -500,7 +502,7 @@ def main():
     if not key or not sec:
         raise SystemExit("Set BYBIT_API_KEY/BYBIT_API_SECRET (hoặc API_KEY/API_SECRET)")
 
-    cfg = Config()  # Aggressive defaults + throttled logs + clean init
+    cfg = Config()  # Aggressive ~600 defaults + throttled logs + clean init
     http = HTTP(api_key=key, api_secret=sec, recv_window=cfg.recv_window)
     bot = DogeFlipAggressiveWinOnly(http, cfg)
     bot.loop()
