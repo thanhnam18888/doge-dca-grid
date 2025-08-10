@@ -1,7 +1,7 @@
 
 """
-DOGEUSDT Flip-on-TP — Win-Only Close (Aggressive Preset)
---------------------------------------------------------
+DOGEUSDT Flip-on-TP — Win-Only Close (Aggressive Preset, Throttled Logs)
+-------------------------------------------------------------------------
 - Always-in-market: LONG <-> SHORT; flip on TP.
 - "Win-only": close only when net profit >= min_profit_usd (after taker fees). No loss-closes.
 - TP default: Limit PostOnly (maker) reduceOnly. Detect fills by syncing positions.
@@ -10,6 +10,7 @@ DOGEUSDT Flip-on-TP — Win-Only Close (Aggressive Preset)
 - DCA against adverse moves with limits; widen step when deep.
 - Funding guard for SHORT (stricter): pause SHORT open/DCA if funding < -0.06%/8h.
 - Extra logging: liqPrice & adlRank if available from Bybit.
+- Throttled logs: Heartbeat every 30s, RiskView every 120s (configurable).
 
 ENV: BYBIT_API_KEY/BYBIT_API_SECRET (or API_KEY/API_SECRET)
 Needs: pip install pybit
@@ -20,7 +21,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Callable, Any, Tuple, List
 from pybit.unified_trading import HTTP
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+# -------- logging setup (honor LOG_LEVEL env if set) --------
+_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, _level, logging.INFO),
+                    format="%(asctime)s %(levelname)s: %(message)s")
 
 # ---------------------- config (Aggressive) ----------------------
 
@@ -65,6 +69,11 @@ class TPModeCfg:
     tp_order_mode: str = "limit_postonly"  # default: maker; alt: "market_conditional"
 
 @dataclass
+class LogCfg:
+    heartbeat_sec: int = int(os.environ.get("LOG_HEARTBEAT_SEC", "30"))  # status every 30s
+    riskview_sec: int = int(os.environ.get("LOG_RISKVIEW_SEC", "120"))   # liq/adl every 120s
+
+@dataclass
 class Config:
     symbol: str = "DOGEUSDT"
     category: str = "linear"
@@ -75,6 +84,7 @@ class Config:
     risk: RiskCfg = field(default_factory=RiskCfg)
     guard: GuardCfg = field(default_factory=GuardCfg)
     tp_mode: TPModeCfg = field(default_factory=TPModeCfg)
+    log: LogCfg = field(default_factory=LogCfg)
 
 # ---------------------- utils ----------------------
 
@@ -118,6 +128,10 @@ class DogeFlipAggressiveWinOnly:
         self.next_price: Optional[float] = None
         self.tp_order_id: Optional[str] = None
         self.entry_fees_paid_usd = 0.0
+
+        # log throttling timers
+        self._t_last_hb = 0.0
+        self._t_last_risk = 0.0
 
         # instrument
         info = with_retry(self.http.get_instruments_info, category=cfg.category, symbol=cfg.symbol)
@@ -210,9 +224,13 @@ class DogeFlipAggressiveWinOnly:
                 # refresh local state
                 self.pos_qty = size
                 self.avg_entry = avg if size > 0 else None
-                # extra log for risk view
+                # throttled risk view
                 if size > 0:
-                    logging.info("RiskView liqPrice=%s adlRank=%s", f"{liq:.6f}" if liq is not None else "NA", str(adl))
+                    now = time.time()
+                    if now - self._t_last_risk >= self.cfg.log.riskview_sec:
+                        logging.info("RiskView liqPrice=%s adlRank=%s",
+                                     f"{liq:.6f}" if liq is not None else "NA", str(adl))
+                        self._t_last_risk = now
         except Exception as e:
             logging.warning("sync_position failed: %s", e)
 
@@ -448,15 +466,20 @@ class DogeFlipAggressiveWinOnly:
             self.maybe_open_or_dca(price)
             self.check_tp_and_flip(price, mark)
 
-            pnl = None
-            if self.avg_entry and self.pos_qty > 0:
-                pnl = self.expected_net_pnl(price)
-            rsi_d = self.get_daily_rsi()
-            logging.info("side=%s pos=%.0f avg=%.6f px=%.6f pnl≈%s rsiD=%s L=%d",
-                         self.side, self.pos_qty, self.avg_entry or 0.0, price,
-                         f"{pnl:.2f}" if pnl is not None else "NA",
-                         f"{rsi_d:.1f}" if rsi_d is not None else "NA",
-                         self.level)
+            # throttled heartbeat
+            now = time.time()
+            if now - self._t_last_hb >= self.cfg.log.heartbeat_sec:
+                pnl = None
+                if self.avg_entry and self.pos_qty > 0:
+                    pnl = self.expected_net_pnl(price)
+                rsi_d = self.get_daily_rsi()
+                logging.info("HB side=%s pos=%.0f avg=%.6f px=%.6f pnl≈%s rsiD=%s L=%d",
+                             self.side, self.pos_qty, self.avg_entry or 0.0, price,
+                             f"{pnl:.2f}" if pnl is not None else "NA",
+                             f"{rsi_d:.1f}" if rsi_d is not None else "NA",
+                             self.level)
+                self._t_last_hb = now
+
             time.sleep(self.cfg.poll_sec)
 
 # ---------------------- main ----------------------
@@ -467,7 +490,7 @@ def main():
     if not key or not sec:
         raise SystemExit("Set BYBIT_API_KEY/BYBIT_API_SECRET (hoặc API_KEY/API_SECRET)")
 
-    cfg = Config()  # Aggressive defaults baked in
+    cfg = Config()  # Aggressive defaults baked in + throttled logs
     http = HTTP(api_key=key, api_secret=sec, recv_window=cfg.recv_window)
     bot = DogeFlipAggressiveWinOnly(http, cfg)
     bot.loop()
