@@ -4,12 +4,11 @@ DOGEUSDT Flip-on-TP — Win-Only Close (Aggressive Preset)
 --------------------------------------------------------
 - Always-in-market: LONG <-> SHORT; flip on TP.
 - "Win-only": close only when net profit >= min_profit_usd (after taker fees). No loss-closes.
-- TP default: Limit PostOnly (maker) reduceOnly. We detect fills by syncing positions.
-- RSI gating (per your rule): RSI_D > 70 ⇒ prefer SHORT (pause LONG); else prefer LONG (pause SHORT).
+- TP default: Limit PostOnly (maker) reduceOnly. Detect fills by syncing positions.
+- RSI gating (your rule): RSI_D > 70 ⇒ prefer SHORT (pause LONG); else prefer LONG (pause SHORT).
 - Cooldown after TP: 10 minutes.
-- DCA against adverse moves with limits; *widen step* when deep.
+- DCA against adverse moves with limits; widen step when deep.
 - Funding guard for SHORT (stricter): pause SHORT open/DCA if funding < -0.06%/8h.
-- Aggressive preset params baked in (see Config below).
 - Extra logging: liqPrice & adlRank if available from Bybit.
 
 ENV: BYBIT_API_KEY/BYBIT_API_SECRET (or API_KEY/API_SECRET)
@@ -17,7 +16,7 @@ Needs: pip install pybit
 """
 
 import os, time, math, uuid, logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Callable, Any, Tuple, List
 from pybit.unified_trading import HTTP
 
@@ -71,11 +70,11 @@ class Config:
     category: str = "linear"
     poll_sec: float = 3.0
     recv_window: int = 60000
-    long: LongCfg = LongCfg()
-    short: ShortCfg = ShortCfg()
-    risk: RiskCfg = RiskCfg()
-    guard: GuardCfg = GuardCfg()
-    tp_mode: TPModeCfg = TPModeCfg()
+    long: LongCfg = field(default_factory=LongCfg)
+    short: ShortCfg = field(default_factory=ShortCfg)
+    risk: RiskCfg = field(default_factory=RiskCfg)
+    guard: GuardCfg = field(default_factory=GuardCfg)
+    tp_mode: TPModeCfg = field(default_factory=TPModeCfg)
 
 # ---------------------- utils ----------------------
 
@@ -177,13 +176,15 @@ class DogeFlipAggressiveWinOnly:
         try:
             r = with_retry(self.http.get_tickers, category=self.cfg.category, symbol=self.cfg.symbol)
             item = r["result"]["list"][0]
-            if "fundingRate" in item and item["fundingRate"] is not None:
-                return float(item["fundingRate"])
         except Exception:
-            pass
-        return None
+            return None
+        fr = item.get("fundingRate")
+        try:
+            return float(fr) if fr is not None else None
+        except Exception:
+            return None
 
-    # sync live position (critical for maker TP detection) + get liq/adl
+    # sync live position (maker TP detection) + get liq/adl
     def sync_position(self):
         try:
             r = with_retry(self.http.get_positions, category=self.cfg.category, symbol=self.cfg.symbol)
