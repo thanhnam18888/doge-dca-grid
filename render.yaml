@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: doge-dca-grid
+    env: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python doge_dca_grid_live.py
+    envVars:
+      - key: BYBIT_API_KEY
+        sync: false
+      - key: BYBIT_API_SECRET
+        sync: false
