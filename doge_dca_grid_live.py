@@ -1,16 +1,17 @@
 
 """
-DOGEUSDT Flip-on-TP — Win-Only Close (Aggressive Preset, Throttled Logs)
--------------------------------------------------------------------------
+DOGEUSDT Flip-on-TP — Win-Only Close (Aggressive Preset, Throttled Logs, Clean init)
+------------------------------------------------------------------------------------
 - Always-in-market: LONG <-> SHORT; flip on TP.
 - "Win-only": close only when net profit >= min_profit_usd (after taker fees). No loss-closes.
 - TP default: Limit PostOnly (maker) reduceOnly. Detect fills by syncing positions.
-- RSI gating (your rule): RSI_D > 70 ⇒ prefer SHORT (pause LONG); else prefer LONG (pause SHORT).
+- RSI gating: RSI_D > 70 ⇒ prefer SHORT (pause LONG); else prefer LONG (pause SHORT).
 - Cooldown after TP: 10 minutes.
 - DCA against adverse moves with limits; widen step when deep.
-- Funding guard for SHORT (stricter): pause SHORT open/DCA if funding < -0.06%/8h.
-- Extra logging: liqPrice & adlRank if available from Bybit.
+- Funding guard for SHORT: pause SHORT open/DCA if funding < -0.06%/8h.
+- Extra logging: liqPrice & adlRank (if Bybit returns).
 - Throttled logs: Heartbeat every 30s, RiskView every 120s (configurable).
+- Clean init: switch_position_mode & set_leverage don't spam retries; "not modified" downgraded to INFO.
 
 ENV: BYBIT_API_KEY/BYBIT_API_SECRET (or API_KEY/API_SECRET)
 Needs: pip install pybit
@@ -140,18 +141,27 @@ class DogeFlipAggressiveWinOnly:
         self.qty_step = float(lot["qtyStep"]); self.min_qty = float(lot["minOrderQty"])
         self.tick_size = float(pricef["tickSize"])
 
-        # one-way & leverage
+        # one-way & leverage (no retry spam; "not modified" -> INFO)
         try:
-            with_retry(self.http.switch_position_mode, category=cfg.category, symbol=cfg.symbol, mode=0)
+            self.http.switch_position_mode(category=cfg.category, symbol=cfg.symbol, mode=0)
             logging.info("Position mode One-Way")
         except Exception as e:
-            logging.warning("Cannot switch One-Way (ok): %s", e)
+            msg = str(e)
+            if "110025" in msg or "not modified" in msg:
+                logging.info("Position mode unchanged (already One-Way).")
+            else:
+                logging.warning("Cannot switch One-Way: %s", e)
+
         try:
-            with_retry(self.http.set_leverage, category=cfg.category, symbol=cfg.symbol,
-                       buyLeverage=str(cfg.risk.leverage), sellLeverage=str(cfg.risk.leverage))
+            self.http.set_leverage(category=cfg.category, symbol=cfg.symbol,
+                                   buyLeverage=str(cfg.risk.leverage), sellLeverage=str(cfg.risk.leverage))
             logging.info("Leverage set to %sx", cfg.risk.leverage)
         except Exception as e:
-            logging.warning("Cannot set leverage: %s", e)
+            msg = str(e)
+            if "110043" in msg or "not modified" in msg:
+                logging.info("Leverage unchanged (already %sx).", cfg.risk.leverage)
+            else:
+                logging.warning("Cannot set leverage: %s", e)
 
         # RSI cache
         self._rsi_ts = 0.0; self._rsi_daily = None
@@ -490,7 +500,7 @@ def main():
     if not key or not sec:
         raise SystemExit("Set BYBIT_API_KEY/BYBIT_API_SECRET (hoặc API_KEY/API_SECRET)")
 
-    cfg = Config()  # Aggressive defaults baked in + throttled logs
+    cfg = Config()  # Aggressive defaults + throttled logs + clean init
     http = HTTP(api_key=key, api_secret=sec, recv_window=cfg.recv_window)
     bot = DogeFlipAggressiveWinOnly(http, cfg)
     bot.loop()
